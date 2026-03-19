@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Lunar Lander</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
+    <script src="js/game.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; margin: 0 auto; }
+    </style>
+</head>
+<body>
+</body>
+</html>
+EF
+
+F js/game.js
+N
+class LanderScene extends Phaser.Scene {
+    constructor() {
+        super({ key: 'LanderScene' });
+    }
+
+    preload() {
+        // Placeholder graphics, can replace with actual images later
+        this.graphics = this.add.graphics();
+    }
+
+    create() {
+        const width = this.sys.game.config.width;
+        const height = this.sys.game.config.height;
+
+        // Lander properties
+        this.lander = this.physics.add.sprite(width / 2, 100, null)
+            .setDisplaySize(40, 40)
+            .setTint(0xffffff);
+
+        this.lander.body.setGravityY(200);
+        this.lander.setCollideWorldBounds(true);
+
+        // Input keys
+        this.cursors = this.input.keyboard.createCursorKeys();
+    }
+
+    update() {
+        if (this.cursors.left.isDown) {
+            this.lander.setAngularVelocity(-150);
+        } else if (this.cursors.right.isDown) {
+            this.lander.setAngularVelocity(150);
+        } else {
+            this.lander.setAngularVelocity(0);
+        }
+
+        if (this.cursors.up.isDown) {
+            // Apply thrust in direction lander is facing
+            const angleRad = Phaser.Math.DegToRad(this.lander.angle - 90);
+            const thrust = 5;
+            this.lander.body.velocity.x += Math.cos(angleRad) * thrust;
+            this.lander.body.velocity.y += Math.sin(angleRad) * thrust;
+        }
+    }
+}
+
+const config = {
+    type: Phaser.AUTO,
+    width: 800,
+    height: 600,
+    physics: {
+        default: 'arcade',
+        arcade: {
+            gravity: { y: 0 }, // We'll apply gravity manually to lander
+            debug: false
+        }
+    },
+    scene: [LanderScene]
+};
+
+const game = new Phaser.Game(config);
+EF
+
+GLOSSARY
+N: create new file
+M: modify existing file
+EF: end of file block
