@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 PacheCode CLI tool
-
 Usage: python pachecode.py <subdirectory>
 Reads PacheCode DSL from stdin until EOF (Ctrl+D).
 """
@@ -84,14 +83,12 @@ class PacheCodeParser:
         path = line[2:].strip()
         fp = FilePatch(path)
         self.pos += 1
-
         while self.pos < len(self.lines):
             line = self.lines[self.pos].strip()
             if line == "EF":
                 self.pos += 1
                 break
             fp.add_op(self.parse_op())
-
         return fp
 
     def parse_op(self):
@@ -107,34 +104,32 @@ class PacheCodeParser:
         # One-word commands
         if line in ("N", "M", "D", "A", "C"):
             content = []
-
             if line in ("N", "A"):
                 term = "EN" if line == "N" else "EA"
                 while self.pos < len(self.lines):
                     l = self.lines[self.pos]
-                    self.pos += 1
                     if l.strip() == term:
-                        break
+                        self.pos += 1
+                        return (line, content)
+                    if l.strip().startswith(("F ", "Q")):
+                        raise BlockParseError(f"Block unterminated before line {self.pos+1}, expected {term}")
                     content.append(l)
-
+                    self.pos += 1
+                raise BlockParseError(f"Block unterminated: expected {term} before EOF")
             elif line == "M":
-                # M now collects all lines until EF
                 while self.pos < len(self.lines):
                     l = self.lines[self.pos].strip()
                     if l == "EF":
                         break
                     content.append(self.lines[self.pos])
                     self.pos += 1
-
             return (line, content)
 
         # Commands with arguments
         elif line.startswith("R "):
             return ("R", line[2:].strip())
-
         elif line.startswith("I "):
             return ("I", line[2:].strip(), self.collect_block("EI"))
-
         elif line.startswith("LR "):
             parts = line.split()
             start, end = int(parts[1]), int(parts[2])
@@ -142,13 +137,11 @@ class PacheCodeParser:
             new = self.collect_block("ENEW")
             self.expect("ELR")
             return ("LR", start, end, old, new)
-
         elif line == "SR":
             old = self.collect_block("EOLD")
             new = self.collect_block("ENEW")
             self.expect("ESR")
             return ("SR", old, new)
-
         else:
             raise BlockParseError(f"Unknown operation: {line}")
 
@@ -156,11 +149,14 @@ class PacheCodeParser:
         block = []
         while self.pos < len(self.lines):
             line = self.lines[self.pos]
-            self.pos += 1
             if line.strip() == end_marker:
-                break
+                self.pos += 1
+                return block
+            if line.strip().startswith(("F ", "Q")):
+                raise BlockParseError(f"Block unterminated before line {self.pos+1}, expected {end_marker}")
             block.append(line)
-        return block
+            self.pos += 1
+        raise BlockParseError(f"Block unterminated: expected {end_marker} before EOF")
 
     def expect(self, marker):
         if self.pos >= len(self.lines) or self.lines[self.pos].strip() != marker:
@@ -187,10 +183,9 @@ class PacheCodeExecutor:
 
     def run(self):
         git_dir = self.base_dir / ".git"
-        if git_dir.exists():
-            if self.repo_dirty():
-                run_git(["add", "-A"], cwd=self.base_dir)
-                run_git(["commit", "-m", "pre-patch"], cwd=self.base_dir)
+        if git_dir.exists() and self.repo_dirty():
+            run_git(["add", "-A"], cwd=self.base_dir)
+            run_git(["commit", "-m", "pre-patch"], cwd=self.base_dir)
 
         for fp in sorted(self.parser.files, key=lambda f: str(f.path)):
             self.process_file(fp)
@@ -220,10 +215,11 @@ class PacheCodeExecutor:
     # ----------------------
     # File operations
     # ----------------------
-    def process_file(self, fp: FilePatch):
+    def process_file(self, fp):
         for op in fp.ops:
+            if not op:
+                continue
             cmd = op[0]
-
             if cmd == "N":
                 self.create_file(fp.path, op[1])
             elif cmd == "M":
@@ -246,89 +242,57 @@ class PacheCodeExecutor:
             else:
                 raise RuntimeError(f"Unknown command {cmd}")
 
-    def create_file(self, path, content):
+    def create_file(self, path, lines):
         full = self.full_path(path)
-        if full.exists():
-            raise RuntimeError(f"File {path} already exists")
-        full.parent.mkdir(parents=True, exist_ok=True)
-        full.write_text("\n".join(content) + "\n")
+        ensure_dir(full)
+        full.write_text("\n".join(lines) + "\n")
+
+    def modify_file(self, path, lines):
+        full = self.full_path(path)
+        if not full.exists():
+            raise RuntimeError(f"File does not exist: {path}")
+        full.write_text("\n".join(lines) + "\n")
+
+    def append_file(self, path, lines):
+        full = self.full_path(path)
+        ensure_dir(full)
+        with open(full, "a") as f:
+            f.write("\n".join(lines) + "\n")
 
     def delete_file(self, path):
         full = self.full_path(path)
-        if not full.exists():
-            raise RuntimeError(f"File {path} does not exist")
-        full.unlink()
+        if full.exists():
+            full.unlink()
 
-    def rename_file(self, path, new_path):
+    def insert_file(self, path, lineno, lines):
         full = self.full_path(path)
-        target = self.full_path(new_path)
-        if not full.exists():
-            raise RuntimeError(f"File {path} does not exist for rename")
-        if target.exists():
-            raise RuntimeError(f"Target {new_path} exists")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        full.rename(target)
+        ensure_dir(full)
+        current = full.read_text().splitlines()
+        lineno = max(0, min(lineno-1, len(current)))
+        current[lineno:lineno] = lines
+        full.write_text("\n".join(current) + "\n")
 
-    def append_file(self, path, content):
+    def search_replace(self, path, old_lines, new_lines):
         full = self.full_path(path)
-        if not full.exists():
-            raise RuntimeError(f"File {path} missing for append")
-        with full.open("a") as f:
-            f.write("\n".join(content) + "\n")
+        text = full.read_text()
+        text = text.replace("\n".join(old_lines), "\n".join(new_lines))
+        full.write_text(text)
 
-    def insert_file(self, path, line_num, content):
+    def line_replace(self, path, start, end, old_lines, new_lines):
         full = self.full_path(path)
-        if not full.exists():
-            raise RuntimeError(f"File {path} missing for insert")
         lines = full.read_text().splitlines()
-        if line_num < 1 or line_num > len(lines) + 1:
-            raise RuntimeError(f"Invalid insert line number {line_num}")
-        new_lines = lines[:line_num-1] + content + lines[line_num-1:]
-        full.write_text("\n".join(new_lines) + "\n")
+        lines[start-1:end] = new_lines
+        full.write_text("\n".join(lines) + "\n")
 
-    def search_replace(self, path, old_block, new_block):
-        full = self.full_path(path)
-        if not full.exists():
-            raise RuntimeError(f"File {path} missing for search/replace")
-        content = full.read_text().splitlines()
-        old_len = len(old_block)
-        replaced = False
-        i = 0
-        while i <= len(content) - old_len:
-            if content[i:i+old_len] == old_block:
-                content[i:i+old_len] = new_block
-                replaced = True
-                i += len(new_block)
-            else:
-                i += 1
-        if not replaced:
-            raise RuntimeError(f"SR: old block not found in {path}")
-        full.write_text("\n".join(content) + "\n")
+    def rename_file(self, path, new_name):
+        old_full = self.full_path(path)
+        new_full = self.full_path(new_name)
+        ensure_dir(new_full)
+        old_full.rename(new_full)
 
-    def line_replace(self, path, start, end, old_block, new_block):
-        full = self.full_path(path)
-        if not full.exists():
-            raise RuntimeError(f"File {path} missing for line replace")
-        content = full.read_text().splitlines()
-        if start < 1 or end > len(content) or content[start-1:end] != old_block:
-            raise RuntimeError(f"LR mismatch or invalid range in {path}")
-        content[start-1:end] = new_block
-        full.write_text("\n".join(content) + "\n")
-
-    def modify_file(self, path, content):
-        full = self.full_path(path)
-        if not full.exists():
-            raise RuntimeError(f"File {path} missing for modify")
-        full.write_text("\n".join(content) + "\n")
-
-    # ----------------------
-    # Queries
-    # ----------------------
-    def process_query(self, commands):
-        script = "\n".join(commands)
-        print("Query executed. Output:\n")
-        res = subprocess.run(script, shell=True, cwd=self.base_dir, text=True, capture_output=True)
-        print(res.stdout)
+    def process_query(self, query_lines):
+        # Stub: just print for now
+        print("Query:", query_lines)
 
 # ----------------------
 # Main
@@ -337,12 +301,17 @@ def main():
     if len(sys.argv) != 2:
         print("Usage: python pachecode.py <subdirectory>")
         sys.exit(1)
+
     base_dir = Path(sys.argv[1]).resolve()
     dsl_text = read_stdin()
-    parser = PacheCodeParser(dsl_text).parse()
-    executor = PacheCodeExecutor(base_dir, parser)
+
     try:
+        parser = PacheCodeParser(dsl_text).parse()
+        executor = PacheCodeExecutor(base_dir, parser)
         executor.run()
+    except BlockParseError as e:
+        print(f"PacheCode parsing error: {e}")
+        sys.exit(1)
     except Exception as e:
         print(f"ERROR: {e}")
         if (base_dir / ".git").exists():
