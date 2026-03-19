@@ -12,8 +12,4 @@ fi
 
 # Start Python HTTP server
 python3 -m http.server "$PORT" --directory "$DIRECTORY"
-EF
 
-GLOSSARY
-N: create new file
-EF: end of file block
