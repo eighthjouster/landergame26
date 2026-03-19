@@ -2,7 +2,9 @@
 # PacheCode Bash Wrapper
 # Usage: ./pachecode <project_subdirectory> < patchfile.pachediff
 
+# -------------------------------
 # Check arguments
+# -------------------------------
 if [ $# -ne 1 ]; then
     echo "Usage: $0 <project_subdirectory>"
     exit 1
@@ -10,7 +12,9 @@ fi
 
 PROJECT_DIR="$1"
 
+# -------------------------------
 # Ensure python3.11+ is available
+# -------------------------------
 if ! command -v python3 &> /dev/null; then
     echo "Error: python3 not found"
     exit 1
@@ -22,7 +26,17 @@ if [[ $(echo "$PYTHON_VERSION >= 3.11" | bc) -ne 1 ]]; then
     exit 1
 fi
 
+# -------------------------------
+# Run DSL Validator first
+# -------------------------------
+if ! python3 validate_pachecode.py <&0; then
+    echo "Validation error: PacheCode DSL invalid."
+    exit 1
+fi
+
+# -------------------------------
 # Run the Python PacheCode tool
+# -------------------------------
 python3 pachecode.py "$PROJECT_DIR"
 EXIT_CODE=$?
 
