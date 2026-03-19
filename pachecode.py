@@ -6,17 +6,27 @@ Usage: python pachecode.py <subdirectory>
 Reads PacheCode DSL from stdin until EOF (Ctrl+D).
 """
 
-import sys, os, subprocess
+import sys
+import os
+import subprocess
 from pathlib import Path
 
 # ----------------------
 # Helpers
 # ----------------------
 def run_git(cmd, cwd, capture=False):
-    return subprocess.run(["git"] + cmd, cwd=cwd, check=True, text=True, capture_output=capture)
+    return subprocess.run(
+        ["git"] + cmd,
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=capture
+    )
 
 def ensure_dir(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dirpath = os.path.dirname(path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
 
 def read_stdin():
     return sys.stdin.read()
@@ -74,23 +84,30 @@ class PacheCodeParser:
         path = line[2:].strip()
         fp = FilePatch(path)
         self.pos += 1
+
         while self.pos < len(self.lines):
             line = self.lines[self.pos].strip()
             if line == "EF":
                 self.pos += 1
                 break
             fp.add_op(self.parse_op())
+
         return fp
 
     def parse_op(self):
-        line = self.lines[self.pos].strip()
-        self.pos += 1
-        if not line:
-            return self.parse_op()
+        # skip blank lines safely
+        while self.pos < len(self.lines):
+            line = self.lines[self.pos].strip()
+            self.pos += 1
+            if line:
+                break
+        else:
+            raise BlockParseError("Unexpected EOF while parsing operation")
 
         # One-word commands
         if line in ("N", "M", "D", "A", "C"):
             content = []
+
             if line in ("N", "A"):
                 term = "EN" if line == "N" else "EA"
                 while self.pos < len(self.lines):
@@ -99,13 +116,25 @@ class PacheCodeParser:
                     if l.strip() == term:
                         break
                     content.append(l)
+
+            elif line == "M":
+                # M now collects all lines until EF
+                while self.pos < len(self.lines):
+                    l = self.lines[self.pos].strip()
+                    if l == "EF":
+                        break
+                    content.append(self.lines[self.pos])
+                    self.pos += 1
+
             return (line, content)
 
         # Commands with arguments
         elif line.startswith("R "):
             return ("R", line[2:].strip())
+
         elif line.startswith("I "):
             return ("I", line[2:].strip(), self.collect_block("EI"))
+
         elif line.startswith("LR "):
             parts = line.split()
             start, end = int(parts[1]), int(parts[2])
@@ -113,11 +142,13 @@ class PacheCodeParser:
             new = self.collect_block("ENEW")
             self.expect("ELR")
             return ("LR", start, end, old, new)
+
         elif line == "SR":
             old = self.collect_block("EOLD")
             new = self.collect_block("ENEW")
             self.expect("ESR")
             return ("SR", old, new)
+
         else:
             raise BlockParseError(f"Unknown operation: {line}")
 
@@ -151,36 +182,40 @@ class PacheCodeParser:
 # ----------------------
 class PacheCodeExecutor:
     def __init__(self, base_dir, parser):
-        self.base_dir = Path(base_dir).resolve()  # <-- absolute path of base_dir
+        self.base_dir = Path(base_dir).resolve()
         self.parser = parser
 
     def run(self):
-        # Git pre-check
         git_dir = self.base_dir / ".git"
         if git_dir.exists():
             if self.repo_dirty():
-                run_git(["commit", "-am", "pre-patch"], cwd=self.base_dir)
+                run_git(["add", "-A"], cwd=self.base_dir)
+                run_git(["commit", "-m", "pre-patch"], cwd=self.base_dir)
 
-        # Process files
         for fp in sorted(self.parser.files, key=lambda f: str(f.path)):
             self.process_file(fp)
 
-        # Process queries
         for q in self.parser.queries:
             self.process_query(q)
 
-        # Git commit post-patch
         if git_dir.exists():
-            run_git(["commit", "-am", "patched"], cwd=self.base_dir)
+            run_git(["add", "-A"], cwd=self.base_dir)
+            run_git(["commit", "-m", "patched"], cwd=self.base_dir)
 
     def repo_dirty(self):
-        res = subprocess.run(["git","status","--porcelain"], cwd=self.base_dir,
-                             capture_output=True, text=True)
+        res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=self.base_dir,
+            capture_output=True,
+            text=True
+        )
         return bool(res.stdout.strip())
 
     def full_path(self, path):
-        # Combine base_dir with relative path without jumping to /
-        return (self.base_dir / path)
+        full = (self.base_dir / path).resolve()
+        if not str(full).startswith(str(self.base_dir)):
+            raise RuntimeError(f"Path escapes base directory: {path}")
+        return full
 
     # ----------------------
     # File operations
@@ -188,6 +223,7 @@ class PacheCodeExecutor:
     def process_file(self, fp: FilePatch):
         for op in fp.ops:
             cmd = op[0]
+
             if cmd == "N":
                 self.create_file(fp.path, op[1])
             elif cmd == "M":
@@ -200,8 +236,7 @@ class PacheCodeExecutor:
             elif cmd == "A":
                 self.append_file(fp.path, op[1])
             elif cmd == "I":
-                line_num = int(op[1])
-                self.insert_file(fp.path, line_num, op[2])
+                self.insert_file(fp.path, int(op[1]), op[2])
             elif cmd == "SR":
                 self.search_replace(fp.path, op[1], op[2])
             elif cmd == "LR":
@@ -215,7 +250,7 @@ class PacheCodeExecutor:
         full = self.full_path(path)
         if full.exists():
             raise RuntimeError(f"File {path} already exists")
-        ensure_dir(full)
+        full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text("\n".join(content) + "\n")
 
     def delete_file(self, path):
@@ -231,7 +266,7 @@ class PacheCodeExecutor:
             raise RuntimeError(f"File {path} does not exist for rename")
         if target.exists():
             raise RuntimeError(f"Target {new_path} exists")
-        ensure_dir(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
         full.rename(target)
 
     def append_file(self, path, content):
@@ -292,7 +327,7 @@ class PacheCodeExecutor:
     def process_query(self, commands):
         script = "\n".join(commands)
         print("Query executed. Output:\n")
-        res = subprocess.run(script, shell=True, cwd=self.base_dir, text=True)
+        res = subprocess.run(script, shell=True, cwd=self.base_dir, text=True, capture_output=True)
         print(res.stdout)
 
 # ----------------------
@@ -302,13 +337,10 @@ def main():
     if len(sys.argv) != 2:
         print("Usage: python pachecode.py <subdirectory>")
         sys.exit(1)
-
-    base_dir = Path(sys.argv[1]).resolve()  # <-- convert relative subdir to absolute
-
+    base_dir = Path(sys.argv[1]).resolve()
     dsl_text = read_stdin()
     parser = PacheCodeParser(dsl_text).parse()
     executor = PacheCodeExecutor(base_dir, parser)
-
     try:
         executor.run()
     except Exception as e:
