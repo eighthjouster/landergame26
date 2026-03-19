@@ -1,0 +1,279 @@
+DSL v1 Specification
+1. Top-Level Structure
+GLOSSARY
+<definitions>
+END_GLOSSARY
+
+<one or more FILE blocks>
+
+<optional QUERY block>
+
+Sections must appear in this order.
+
+All blocks are explicitly closed.
+
+No nesting allowed.
+
+2. Glossary
+
+Defines shorthand commands (LLM-friendly, deterministic).
+
+Format
+<SHORT> = <FULL_NAME>
+Required (fixed for v1)
+C = COMMENT
+F = FILE
+EF = END_FILE
+
+N = NEW
+M = MODIFY
+D = DELETE
+R = RENAME
+
+SR = SEARCH_REPLACE
+LR = LINE_REPLACE
+A = APPEND
+I = INSERT
+
+You may include the glossary in every file for consistency (recommended).
+
+3. File Block
+Structure
+F <relative_path>
+<one or more operations>
+EF
+
+Paths are relative to the tool’s input directory.
+
+Files must be processed in strict alphabetical order (by path).
+
+Multiple operations allowed per file block.
+
+4. File-Level Operations
+4.1 Create File
+N
+<full file content>
+EN
+
+Rules:
+
+Fails if file already exists
+
+Content replaces entire file
+
+4.2 Delete File
+D
+
+Rules:
+
+No sub-block
+
+Fails if file does not exist
+
+4.3 Rename File
+R <new_relative_path>
+
+Rules:
+
+Executed immediately when encountered
+
+Source must exist
+
+Target must NOT exist
+
+Subsequent operations apply to the new path
+
+5. Content Operations (Modify Mode)
+
+These assume the file exists (after rename if applicable)
+
+5.1 Search & Replace (SR)
+SR
+OLD
+<exact text block>
+EOLD
+NEW
+<replacement text block>
+ENEW
+ESR
+
+Rules:
+
+Exact match required
+
+Replaces all occurrences
+
+Multiline supported
+
+Fail if OLD block not found
+
+5.2 Line Replace (LR)
+LR <start_line> <end_line>
+OLD
+<exact text block>
+EOLD
+NEW
+<replacement text block>
+ENEW
+ELR
+
+Rules:
+
+1-based line numbers
+
+Inclusive range
+
+OLD must exactly match those lines
+
+Fail on mismatch
+
+5.3 Append (A)
+A
+<content>
+EA
+
+Rules:
+
+Always appends to end of file
+
+No validation needed
+
+5.4 Insert (I)
+I <line_number>
+<content>
+EI
+
+Rules:
+
+Inserts before the given line
+
+line_number = last_line + 1 is allowed (acts like append)
+
+Fail if line number invalid
+
+6. Comment
+C <text>
+
+Ignored by the tool
+
+Can appear anywhere inside FILE blocks
+
+7. Query Block (Optional)
+Structure
+Q
+<bash commands>
+EQ
+
+Behavior:
+
+Executed after all file operations (or immediately if no file blocks)
+
+Output is written to:
+
+user-provided filename
+
+OR - → stdout
+
+Tool behavior:
+
+Prompt user:
+
+Output file (or '-' for stdout):
+8. Execution Rules
+Order of execution
+
+Validate structure
+
+Git pre-check:
+
+If repo + dirty → commit "pre-patch"
+
+Process FILE blocks in alphabetical order
+
+Execute QUERY block (if present)
+
+If success → commit "patched"
+
+9. Failure Rules (STRICT MODE)
+
+Immediately stop on:
+
+File not found (when required)
+
+File already exists (on create/rename)
+
+OLD block mismatch
+
+Invalid line numbers
+
+Any command parse error
+
+10. Git Failure Handling
+
+On failure:
+
+Print error
+
+Prompt:
+
+Patch failed. Run git reset --hard? (y/n)
+11. Constraints
+
+Text files only (no binary)
+
+Deterministic formatting required
+
+No metadata, timestamps, or randomness
+
+No implicit behavior
+
+No partial success (all-or-nothing)
+
+12. Design Guarantees (LLM-Optimized)
+
+Fully explicit blocks (no ambiguity)
+
+No indentation sensitivity
+
+No regex required (string exact match)
+
+Minimal token variability
+
+Reusable patterns
+
+13. Example (Minimal)
+GLOSSARY
+C = COMMENT
+F = FILE
+EF = END_FILE
+N = NEW
+M = MODIFY
+D = DELETE
+R = RENAME
+SR = SEARCH_REPLACE
+LR = LINE_REPLACE
+A = APPEND
+I = INSERT
+END_GLOSSARY
+
+F index.html
+N
+<html>
+<body>
+Hello
+</body>
+</html>
+EN
+EF
+
+F index.html
+M
+SR
+OLD
+Hello
+EOLD
+NEW
+Hello World
+ENEW
+ESR
+EF
